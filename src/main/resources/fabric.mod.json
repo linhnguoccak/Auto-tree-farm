@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "auto-tree-farmer",
+  "version": "${version}",
+  "name": "Auto Tree Farmer",
+  "description": "Tự động trồng, bón bột xương và chặt cây tại khu farm. Hỗ trợ chế độ Đa khu.",
+  "authors": ["ALB SCRIPT"],
+  "contact": {
+    "sources": "https://tiktok.com/@script.albhub"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.albscript.autotreefarmer.AutoTreeFarmerMod"
+    ]
+  },
+  "mixins": [],
+  "depends": {
+    "fabricloader": ">=0.14.21",
+    "fabric-api": "*",
+    "minecraft": ">=1.21.11",
+    "java": ">=17"
+  }
+}
