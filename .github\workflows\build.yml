@@ -1,0 +1,45 @@
+name: Build Auto Tree Farmer
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:   # Nút "Run workflow" thủ công trên GitHub
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Fabric Mod
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Tải source code về
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # 2. Cài Java 21
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # 3. Cài Gradle 8.8 (không cần gradlew)
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.8'
+
+      # 4. Build mod
+      - name: Build mod
+        run: gradle build
+
+      # 5. Upload file .jar → tải về ở tab Actions
+      - name: Upload mod jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-tree-farmer-mod
+          path: build/libs/auto-tree-farmer-*.jar
+          if-no-files-found: error
+          retention-days: 30
