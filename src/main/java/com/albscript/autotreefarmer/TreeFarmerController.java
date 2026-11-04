@@ -20,24 +20,24 @@ import java.util.List;
 
 public class TreeFarmerController {
 
-    private static final int SCAN_RADIUS       = 8;
-    private static final int MAX_TREE_HEIGHT   = 20;
-    private static final int BONE_MEAL_DELAY   = 2;
-    private static final int BREAK_DELAY       = 4;
-    private static final int ACTION_DELAY      = 5;
-    private static final float HEAL_THRESHOLD  = 6.0f;
+    private static final int SCAN_RADIUS      = 8;
+    private static final int MAX_TREE_HEIGHT  = 20;
+    private static final int BONE_MEAL_DELAY  = 2;
+    private static final int BREAK_DELAY      = 4;
+    private static final int ACTION_DELAY     = 5;
+    private static final float HEAL_THRESHOLD = 6.0f;
 
-    private boolean      active           = false;
-    private FarmerState  state            = FarmerState.IDLE;
-    private List<BlockPos> farmPlots      = new ArrayList<>();
-    private int          currentAreaIdx   = 0;
-    private BlockPos     currentTarget    = null;
-    private int          actionCooldown   = 0;
-    private int          boneMealAttempts = 0;
-    private int          areaCount        = 0;
+    private boolean        active           = false;
+    private FarmerState    state            = FarmerState.IDLE;
+    private List<BlockPos> farmPlots        = new ArrayList<>();
+    private int            currentAreaIdx   = 0;
+    private BlockPos       currentTarget    = null;
+    private int            actionCooldown   = 0;
+    private int            boneMealAttempts = 0;
+    private int            areaCount        = 0;
 
-    public boolean isActive() { return active; }
-    public FarmerState getState() { return state; }
+    public boolean isActive()      { return active; }
+    public FarmerState getState()  { return state; }
 
     public void toggle(MinecraftClient client) {
         active = !active;
@@ -46,8 +46,7 @@ public class TreeFarmerController {
             currentAreaIdx   = 0;
             boneMealAttempts = 0;
             farmPlots.clear();
-            AutoTreeFarmerMod.sendMessage(client,
-                "§aBật Auto Tree Farmer §7(chế độ §fĐa khu§7)");
+            AutoTreeFarmerMod.sendMessage(client, "§aBật Auto Tree Farmer");
         } else {
             state         = FarmerState.IDLE;
             currentTarget = null;
@@ -86,7 +85,7 @@ public class TreeFarmerController {
                            ClientPlayerEntity player) {
         farmPlots.clear();
         BlockPos center = player.getBlockPos();
-        AutoTreeFarmerMod.sendMessage(client, "Đang phân tích khu vực Farm...");
+        AutoTreeFarmerMod.sendMessage(client, "Đang phân tích khu vực farm...");
 
         for (int x = -SCAN_RADIUS; x <= SCAN_RADIUS; x++) {
             for (int z = -SCAN_RADIUS; z <= SCAN_RADIUS; z++) {
@@ -120,30 +119,46 @@ public class TreeFarmerController {
         if (farmPlots.isEmpty()) { state = FarmerState.SCANNING_AREA; return; }
 
         int n = farmPlots.size();
+
+        // PASS 1: Trồng hết tất cả ô trống trước
         for (int i = 0; i < n; i++) {
             int idx       = (currentAreaIdx + i) % n;
             BlockPos plot = farmPlots.get(idx);
             Block above   = world.getBlockState(plot.up()).getBlock();
 
-            if (above == Blocks.AIR || above == Blocks.CAVE_AIR) {
-                if (hasItem(player, Items.OAK_SAPLING)) {
-                    currentTarget    = plot;
-                    currentAreaIdx   = idx;
-                    boneMealAttempts = 0;
-                    state = FarmerState.PLANTING;
-                    return;
-                }
-            } else if (isSapling(above)) {
-                if (hasItem(player, Items.BONE_MEAL)) {
-                    currentTarget    = plot;
-                    currentAreaIdx   = idx;
-                    boneMealAttempts = 0;
-                    state = FarmerState.BONE_MEALING;
-                    AutoTreeFarmerMod.sendMessage(client,
-                        "Bón bột xương (" + (idx + 1) + "/" + n + " khu)");
-                    return;
-                }
-            } else if (isLog(above) || hasLogAbove(world, plot)) {
+            if ((above == Blocks.AIR || above == Blocks.CAVE_AIR)
+                    && hasItem(player, Items.OAK_SAPLING)) {
+                currentTarget  = plot;
+                currentAreaIdx = idx;
+                state = FarmerState.PLANTING;
+                return;
+            }
+        }
+
+        // PASS 2: Bón bone meal hết sapling (chỉ khi ko còn ô trống)
+        for (int i = 0; i < n; i++) {
+            int idx       = (currentAreaIdx + i) % n;
+            BlockPos plot = farmPlots.get(idx);
+            Block above   = world.getBlockState(plot.up()).getBlock();
+
+            if (isSapling(above) && hasItem(player, Items.BONE_MEAL)) {
+                currentTarget    = plot;
+                currentAreaIdx   = idx;
+                boneMealAttempts = 0;
+                state = FarmerState.BONE_MEALING;
+                AutoTreeFarmerMod.sendMessage(client,
+                    "Bón bột xương (" + (idx + 1) + "/" + n + ")");
+                return;
+            }
+        }
+
+        // PASS 3: Chặt cây (chỉ khi ko còn sapling nào cần bón)
+        for (int i = 0; i < n; i++) {
+            int idx       = (currentAreaIdx + i) % n;
+            BlockPos plot = farmPlots.get(idx);
+            Block above   = world.getBlockState(plot.up()).getBlock();
+
+            if (isLog(above) || hasLogAbove(world, plot)) {
                 currentTarget  = plot;
                 currentAreaIdx = idx;
                 AutoTreeFarmerMod.sendMessage(client,
@@ -153,6 +168,7 @@ public class TreeFarmerController {
             }
         }
 
+        // Xong hết → quét lại
         actionCooldown = 40;
         state = FarmerState.SCANNING_AREA;
     }
@@ -185,7 +201,7 @@ public class TreeFarmerController {
                                   ClientPlayerEntity player) {
         if (currentTarget == null) { state = FarmerState.SELECTING_TARGET; return; }
 
-        BlockPos sapPos  = currentTarget.up();
+        BlockPos sapPos   = currentTarget.up();
         Block    sapBlock = world.getBlockState(sapPos).getBlock();
 
         if (!isSapling(sapBlock)) {
