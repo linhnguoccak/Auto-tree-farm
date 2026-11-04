@@ -20,15 +20,12 @@ public class AutoTreeFarmerMod implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        KeyBinding.Category category = KeyBinding.Category.register(
-            Identifier.of(MOD_ID, "controls")
-        );
-
+        // Dùng category có sẵn MISC thay vì register() (không tồn tại trong 1.21.11)
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
             "key.autotreefarmer.toggle",
             InputUtil.Type.KEYSYM,
             GLFW.GLFW_KEY_K,
-            category
+            KeyBinding.Category.MISC
         ));
 
         controller = new TreeFarmerController();
