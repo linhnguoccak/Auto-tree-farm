@@ -20,24 +20,27 @@ import java.util.List;
 
 public class TreeFarmerController {
 
-    private static final int SCAN_RADIUS      = 8;
-    private static final int MAX_TREE_HEIGHT  = 20;
-    private static final int BONE_MEAL_DELAY  = 2;
-    private static final int BREAK_DELAY      = 4;
-    private static final int ACTION_DELAY     = 5;
-    private static final float HEAL_THRESHOLD = 6.0f;
+    private static final int   SCAN_RADIUS      = 8;
+    private static final int   MAX_TREE_HEIGHT  = 20;
+    private static final int   BONE_MEAL_DELAY  = 2;
+    private static final int   BREAK_DELAY      = 3;
+    private static final int   ACTION_DELAY     = 4;
+    private static final float HEAL_THRESHOLD   = 6.0f;
+    private static final double REACH           = 4.2; // tầm với tương tác
 
     private boolean        active           = false;
     private FarmerState    state            = FarmerState.IDLE;
     private List<BlockPos> farmPlots        = new ArrayList<>();
+    private BlockPos       centerPos        = null; // vị trí trung tâm khi bật
     private int            currentAreaIdx   = 0;
     private BlockPos       currentTarget    = null;
     private int            actionCooldown   = 0;
     private int            boneMealAttempts = 0;
-    private int            areaCount        = 0;
+    private int            treeCount        = 0;
+    private boolean        isWalkingToTree  = false;
 
-    public boolean isActive()      { return active; }
-    public FarmerState getState()  { return state; }
+    public boolean isActive()     { return active; }
+    public FarmerState getState() { return state; }
 
     public void toggle(MinecraftClient client) {
         active = !active;
@@ -45,9 +48,12 @@ public class TreeFarmerController {
             state            = FarmerState.SCANNING_AREA;
             currentAreaIdx   = 0;
             boneMealAttempts = 0;
+            isWalkingToTree  = false;
             farmPlots.clear();
+            if (client.player != null) centerPos = client.player.getBlockPos();
             AutoTreeFarmerMod.sendMessage(client, "§aBật Auto Tree Farmer");
         } else {
+            stopWalking(client);
             state         = FarmerState.IDLE;
             currentTarget = null;
             AutoTreeFarmerMod.sendMessage(client, "§cTắt Auto Tree Farmer");
@@ -62,9 +68,9 @@ public class TreeFarmerController {
         ClientWorld        world  = client.world;
 
         if (state != FarmerState.HEALING && needsHealing(player)) {
+            stopWalking(client);
             AutoTreeFarmerMod.sendMessage(client,
-                "§eTạm dừng để hồi phục (Máu: " +
-                (int)(player.getHealth() / 2) + "♥)");
+                "§eTạm dừng để hồi phục (Máu: " + (int)(player.getHealth() / 2) + "♥)");
             state = FarmerState.HEALING;
             return;
         }
@@ -75,17 +81,19 @@ public class TreeFarmerController {
             case PLANTING         -> performPlanting(client, world, player);
             case BONE_MEALING     -> performBoneMeal(client, world, player);
             case CHOPPING         -> performChopping(client, world, player);
-            case COLLECTING       -> finishCollecting(client);
+            case COLLECTING       -> finishCollecting(client, player);
             case HEALING          -> waitForHealing(client, player);
             default               -> {}
         }
     }
 
+    // ─── SCAN ───────────────────────────────────────────────────────────────
+
     private void scanArea(MinecraftClient client, ClientWorld world,
                            ClientPlayerEntity player) {
         farmPlots.clear();
         BlockPos center = player.getBlockPos();
-        AutoTreeFarmerMod.sendMessage(client, "Đang phân tích khu vực farm...");
+        centerPos = center;
 
         for (int x = -SCAN_RADIUS; x <= SCAN_RADIUS; x++) {
             for (int z = -SCAN_RADIUS; z <= SCAN_RADIUS; z++) {
@@ -114,20 +122,23 @@ public class TreeFarmerController {
         }
     }
 
+    // ─── SELECT ──────────────────────────────────────────────────────────────
+
     private void selectTarget(MinecraftClient client, ClientWorld world,
                                ClientPlayerEntity player) {
         if (farmPlots.isEmpty()) { state = FarmerState.SCANNING_AREA; return; }
 
         int n = farmPlots.size();
 
-        // PASS 1: Trồng hết tất cả ô trống trước
+        // PASS 1: Trồng hết ô trống (chỉ ô trong tầm với)
         for (int i = 0; i < n; i++) {
             int idx       = (currentAreaIdx + i) % n;
             BlockPos plot = farmPlots.get(idx);
             Block above   = world.getBlockState(plot.up()).getBlock();
 
             if ((above == Blocks.AIR || above == Blocks.CAVE_AIR)
-                    && hasItem(player, Items.OAK_SAPLING)) {
+                    && hasItem(player, Items.OAK_SAPLING)
+                    && inReach(player, plot)) {
                 currentTarget  = plot;
                 currentAreaIdx = idx;
                 state = FarmerState.PLANTING;
@@ -135,51 +146,60 @@ public class TreeFarmerController {
             }
         }
 
-        // PASS 2: Bón bone meal hết sapling (chỉ khi ko còn ô trống)
+        // PASS 2: Bón bone meal hết sapling (chỉ ô trong tầm với)
         for (int i = 0; i < n; i++) {
             int idx       = (currentAreaIdx + i) % n;
             BlockPos plot = farmPlots.get(idx);
             Block above   = world.getBlockState(plot.up()).getBlock();
 
-            if (isSapling(above) && hasItem(player, Items.BONE_MEAL)) {
+            if (isSapling(above)
+                    && hasItem(player, Items.BONE_MEAL)
+                    && inReach(player, plot)) {
                 currentTarget    = plot;
                 currentAreaIdx   = idx;
                 boneMealAttempts = 0;
                 state = FarmerState.BONE_MEALING;
-                AutoTreeFarmerMod.sendMessage(client,
-                    "Bón bột xương (" + (idx + 1) + "/" + n + ")");
                 return;
             }
         }
 
-        // PASS 3: Chặt cây (chỉ khi ko còn sapling nào cần bón)
+        // PASS 3: Chặt cây — đi đến cây
         for (int i = 0; i < n; i++) {
             int idx       = (currentAreaIdx + i) % n;
             BlockPos plot = farmPlots.get(idx);
-            Block above   = world.getBlockState(plot.up()).getBlock();
 
-            if (isLog(above) || hasLogAbove(world, plot)) {
+            if (hasLogAbove(world, plot)) {
                 currentTarget  = plot;
                 currentAreaIdx = idx;
                 AutoTreeFarmerMod.sendMessage(client,
-                    "Chặt cây §f" + (idx + 1) + "/" + n);
+                    "Đi chặt cây §f" + (idx + 1) + "/" + n);
                 state = FarmerState.CHOPPING;
                 return;
             }
         }
 
         // Xong hết → quét lại
+        stopWalking(client);
         actionCooldown = 40;
         state = FarmerState.SCANNING_AREA;
     }
+
+    // ─── PLANT ───────────────────────────────────────────────────────────────
 
     private void performPlanting(MinecraftClient client, ClientWorld world,
                                   ClientPlayerEntity player) {
         if (currentTarget == null) { state = FarmerState.SELECTING_TARGET; return; }
 
+        // Kiểm tra tầm với
+        if (!inReach(player, currentTarget)) {
+            currentAreaIdx = (currentAreaIdx + 1) % Math.max(1, farmPlots.size());
+            state = FarmerState.SELECTING_TARGET;
+            return;
+        }
+
         int slot = findItemSlot(player, Items.OAK_SAPLING);
         if (slot == -1) {
-            AutoTreeFarmerMod.sendMessage(client, "§cHết sapling! Dừng farmer.");
+            AutoTreeFarmerMod.sendMessage(client, "§cHết sapling! Dừng.");
             active = false; return;
         }
 
@@ -197,6 +217,8 @@ public class TreeFarmerController {
         state = FarmerState.SELECTING_TARGET;
     }
 
+    // ─── BONE MEAL ───────────────────────────────────────────────────────────
+
     private void performBoneMeal(MinecraftClient client, ClientWorld world,
                                   ClientPlayerEntity player) {
         if (currentTarget == null) { state = FarmerState.SELECTING_TARGET; return; }
@@ -205,12 +227,13 @@ public class TreeFarmerController {
         Block    sapBlock = world.getBlockState(sapPos).getBlock();
 
         if (!isSapling(sapBlock)) {
-            if (hasLogAbove(world, currentTarget)) {
-                AutoTreeFarmerMod.sendMessage(client, "✔ Cây mọc! Chuẩn bị chặt...");
-                state = FarmerState.CHOPPING;
-            } else {
-                state = FarmerState.SELECTING_TARGET;
-            }
+            state = FarmerState.SELECTING_TARGET;
+            return;
+        }
+
+        if (!inReach(player, currentTarget)) {
+            currentAreaIdx = (currentAreaIdx + 1) % Math.max(1, farmPlots.size());
+            state = FarmerState.SELECTING_TARGET;
             return;
         }
 
@@ -233,18 +256,19 @@ public class TreeFarmerController {
         actionCooldown = BONE_MEAL_DELAY;
 
         if (boneMealAttempts > 80) {
-            AutoTreeFarmerMod.sendMessage(client,
-                "§eBỏ qua ô " + (currentAreaIdx + 1) + " (không phản hồi)");
             boneMealAttempts = 0;
             currentAreaIdx = (currentAreaIdx + 1) % Math.max(1, farmPlots.size());
             state = FarmerState.SELECTING_TARGET;
         }
     }
 
+    // ─── CHOP ────────────────────────────────────────────────────────────────
+
     private void performChopping(MinecraftClient client, ClientWorld world,
                                   ClientPlayerEntity player) {
         if (currentTarget == null) { state = FarmerState.SELECTING_TARGET; return; }
 
+        // Tìm khúc gỗ thấp nhất
         BlockPos logPos = null;
         for (int y = 1; y <= MAX_TREE_HEIGHT; y++) {
             BlockPos check = currentTarget.up(y);
@@ -254,12 +278,25 @@ public class TreeFarmerController {
         }
 
         if (logPos == null) {
-            areaCount++;
-            AutoTreeFarmerMod.sendMessage(client,
-                "✔ Thu hoạch §f" + areaCount + "§r cây. Trồng lại...");
+            // Cây đã chặt xong
+            treeCount++;
+            stopWalking(client);
+            AutoTreeFarmerMod.sendMessage(client, "✔ Chặt xong cây §f" + treeCount);
             state = FarmerState.COLLECTING;
             return;
         }
+
+        double distToPlot = player.getPos().distanceTo(Vec3d.ofCenter(currentTarget));
+
+        if (distToPlot > 2.5) {
+            // Đi đến gốc cây
+            walkToward(client, player, currentTarget);
+            actionCooldown = 1;
+            return;
+        }
+
+        // Đã đến nơi — dừng đi, chặt
+        stopWalking(client);
 
         int axeSlot = findBestAxeSlot(player);
         if (axeSlot != -1) player.getInventory().setSelectedSlot(axeSlot);
@@ -271,11 +308,16 @@ public class TreeFarmerController {
         actionCooldown = BREAK_DELAY;
     }
 
-    private void finishCollecting(MinecraftClient client) {
-        actionCooldown = 20;
+    // ─── COLLECT ─────────────────────────────────────────────────────────────
+
+    private void finishCollecting(MinecraftClient client, ClientPlayerEntity player) {
+        // Chờ item rơi rồi quét lại
+        actionCooldown = 25;
         currentAreaIdx = (currentAreaIdx + 1) % Math.max(1, farmPlots.size());
         state = FarmerState.SELECTING_TARGET;
     }
+
+    // ─── HEAL ────────────────────────────────────────────────────────────────
 
     private void waitForHealing(MinecraftClient client, ClientPlayerEntity player) {
         tryEatFood(client, player);
@@ -285,6 +327,28 @@ public class TreeFarmerController {
         } else {
             actionCooldown = 20;
         }
+    }
+
+    // ─── MOVEMENT ────────────────────────────────────────────────────────────
+
+    private void walkToward(MinecraftClient client, ClientPlayerEntity player,
+                             BlockPos target) {
+        lookAt(player, Vec3d.ofCenter(target));
+        client.options.forwardKey.setPressed(true);
+        isWalkingToTree = true;
+    }
+
+    private void stopWalking(MinecraftClient client) {
+        if (client.options != null) {
+            client.options.forwardKey.setPressed(false);
+        }
+        isWalkingToTree = false;
+    }
+
+    // ─── UTILS ───────────────────────────────────────────────────────────────
+
+    private boolean inReach(ClientPlayerEntity player, BlockPos plot) {
+        return player.getPos().distanceTo(Vec3d.ofCenter(plot)) <= REACH;
     }
 
     private void lookAt(ClientPlayerEntity player, Vec3d target) {
@@ -327,7 +391,6 @@ public class TreeFarmerController {
     private int findBestAxeSlot(ClientPlayerEntity player) {
         int   bestSlot     = -1;
         float bestPriority = -1f;
-
         Item[]  axes       = { Items.NETHERITE_AXE, Items.DIAMOND_AXE,
                                Items.IRON_AXE, Items.STONE_AXE, Items.WOODEN_AXE };
         float[] priorities = { 5f, 4f, 3f, 2f, 1f };
